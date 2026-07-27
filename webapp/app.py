@@ -28,13 +28,28 @@ PAGE = """
   <meta charset="utf-8">
   <title>ModSecLabs Target App</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color:#1a1a2e; }
-    h1 { color:#0b3d91; }
-    .card { border:1px solid #ddd; border-radius:10px; padding:1rem 1.25rem; margin:1rem 0; background:#fafbff; }
-    input { padding:.45rem; width:60%; border:1px solid #bbb; border-radius:6px; }
-    button { padding:.5rem .9rem; border:0; border-radius:6px; background:#0b3d91; color:#fff; cursor:pointer; }
-    code { background:#eef; padding:.1rem .3rem; border-radius:4px; }
-    .banner { background:#0b3d91; color:#fff; padding:.4rem .8rem; border-radius:6px; display:inline-block; }
+    /* HackTheBox-inspired dark theme */
+    body { font-family: 'JetBrains Mono','Fira Code',ui-monospace,Menlo,Consolas,monospace;
+           max-width: 780px; margin: 2rem auto; padding: 0 1rem;
+           color:#a4b1cd; background:#141d2b; }
+    h1 { color:#9fef00; letter-spacing:.5px; text-shadow:0 0 12px rgba(159,239,0,.35); }
+    h3 { color:#c5d1eb; }
+    p { color:#a4b1cd; }
+    .card { border:1px solid #2f3f5f; border-radius:10px; padding:1rem 1.25rem;
+            margin:1rem 0; background:#1a2332; box-shadow:0 0 0 1px rgba(159,239,0,.04); }
+    input { padding:.5rem; width:60%; border:1px solid #2f3f5f; border-radius:6px;
+            background:#111927; color:#e5ecf7; }
+    input:focus { outline:none; border-color:#9fef00; box-shadow:0 0 8px rgba(159,239,0,.3); }
+    button { padding:.5rem 1rem; border:0; border-radius:6px; background:#9fef00;
+             color:#111927; font-weight:700; cursor:pointer; }
+    button:hover { background:#b6ff33; }
+    code { background:#0d1522; color:#9fef00; padding:.1rem .35rem; border-radius:4px;
+           border:1px solid #22304a; }
+    a { color:#9fef00; }
+    .banner { background:#111927; color:#9fef00; padding:.45rem .9rem; border-radius:6px;
+              display:inline-block; border:1px solid #9fef00;
+              box-shadow:0 0 14px rgba(159,239,0,.2); }
+    .muted { color:#5c6b8a; }
   </style>
 </head>
 <body>
@@ -67,7 +82,7 @@ PAGE = """
     </form>
   </div>
 
-  <p style="color:#888;font-size:.85rem">Endpoints: <code>/search?q=</code> ·
+  <p class="muted" style="font-size:.85rem">Endpoints: <code>/search?q=</code> ·
      <code>/login?user=</code> · <code>/file?name=</code> ·
      <code>/api/log</code> (POST) · <code>/healthz</code></p>
 </body>
