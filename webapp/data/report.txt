@@ -1,0 +1,5 @@
+QUARTERLY REPORT (public sample file)
+=====================================
+Revenue is up. This is a harmless file that the /file endpoint is
+allowed to serve. Try requesting ../../etc/passwd to see what a path
+traversal attack looks like -- and how ModSecurity blocks it.

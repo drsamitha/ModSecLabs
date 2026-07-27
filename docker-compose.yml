@@ -1,0 +1,39 @@
+# ModSecLabs stack
+# ----------------
+#   [ you ] --> :8080 nginx + ModSecurity + OWASP CRS --> :5000 Flask target
+#
+# The "waf" service is the OWASP CRS reference container. It terminates the
+# request, runs it through the Core Rule Set, and (if the request is clean)
+# proxies it to the "app" service. Everything you attack in the labs goes
+# to http://localhost:8080.
+#
+# Handy environment variables (overridden per-lab):
+#   MODSEC_RULE_ENGINE   On | DetectionOnly | Off
+#   PARANOIA             1..4  (how aggressive the rules are)
+#   ANOMALY_INBOUND      inbound anomaly score threshold to block (default 5)
+#   BLOCKING_PARANOIA    paranoia level used for blocking decisions
+services:
+  app:
+    build: ./webapp
+    container_name: modseclabs-app
+    expose:
+      - "5000"
+
+  waf:
+    image: owasp/modsecurity-crs:nginx
+    container_name: modseclabs-waf
+    depends_on:
+      - app
+    environment:
+      BACKEND: "http://app:5000"
+      PORT: "8080"
+      MODSEC_RULE_ENGINE: "On"
+      PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      # Send the ModSecurity audit + error log to stdout so `docker logs`
+      # shows exactly which rule fired.
+      MODSEC_AUDIT_LOG: "/dev/stdout"
+      MODSEC_AUDIT_ENGINE: "RelevantOnly"
+    ports:
+      - "8080:8080"
