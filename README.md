@@ -65,6 +65,7 @@ Markdown source in [`labs/`](labs/) and a print-ready PDF in [`docs/`](docs/).
 | 06 | **Writing Your Own Rules** | The `SecRule` language; variables/operators/actions/phases; chained rules; the phase-ordering bug | [PDF](docs/Lab06-Writing-Rules.pdf) |
 | 07 | **False Positives & Surgical Tuning** | Diagnosing FPs from logs; scoped `ctl:` exclusions; the DetectionOnly→On go-live workflow | [PDF](docs/Lab07-False-Positives-Tuning.pdf) |
 | 08 | **CVE Virtual Patching & Where It Fails** | Virtual-patching Log4Shell (CVE-2021-44228); WAF bypasses & honest limitations; defence in depth | [PDF](docs/Lab08-CVE-VirtualPatching.pdf) |
+| 09 | **Whitelisting a Rule ID** | Unblocking a legitimate user with `SecRuleRemoveById`; ranges/tags; trusted-IP allowlist; the trade-off | [PDF](docs/Lab09-Whitelisting-Rule-ID.pdf) |
 
 ---
 
@@ -84,7 +85,9 @@ ModSecLabs/
 │   ├── LOCAL-999-CUSTOM.conf          # Lab 06 custom SecRules
 │   ├── EXCLUSIONS-BEFORE-CRS.conf     # Lab 07 surgical exclusion
 │   ├── VIRTUAL-PATCH-log4shell.conf   # Lab 08 CVE virtual patch
-│   └── DISABLE-944.conf               # Lab 08 0-day-window simulation
+│   ├── DISABLE-944.conf               # Lab 08 0-day-window simulation
+│   ├── WHITELIST.conf                 # Lab 09 whitelist a rule ID
+│   └── ALLOWLIST-IP.conf              # Lab 09 trusted-IP allowlist
 ├── scripts/
 │   ├── shoot.py               # headless-Chromium screenshotter
 │   └── md2pdf.py              # render a lab .md to a styled PDF
