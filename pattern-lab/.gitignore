@@ -1,4 +1,5 @@
 out/
+capture/
 audit/
 __pycache__/
 *.pyc

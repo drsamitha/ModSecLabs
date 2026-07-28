@@ -1,96 +1,152 @@
 #!/usr/bin/env python3
 """
-pattern-lab CLI — analyze a ModSecurity audit log end to end.
+pattern-lab CLI — behavioural baselining for positive-security WAF lockdown.
 
-    python analyze.py sample-data/sample_audit.jsonl --out out/
+    # learn normal from a baseline log, then score a fresh log against it
+    python analyze.py --baseline sample-data/baseline.jsonl \
+                      --score    sample-data/mixed.jsonl --out out/
 
 Produces in --out:
-    patterns.csv                  the classified pattern table (feed to Claude)
-    EXCLUSIONS-AUTO.conf          scoped CRS exclusions for false positives
-    HARDENING-AUTO.conf           stubs for attacks not fully blocked
-    claude_prompt.txt             ready-to-paste prompt (or API result)
-And prints a summary + top patterns to the terminal.
+    profile.json        the learned behavioural baseline (endpoints, params, flow)
+    profile.csv         flat per-(endpoint,param) envelope table
+    anomalies.csv       requests in --score that fell outside the envelope
+    claude_prompt.txt   ready-to-paste prompt: profile -> lockdown rules
+                        (or claude_lockdown.conf if --claude and an API key)
+And prints a report. The engine LEARNS and SCORES; it does not write rules.
 """
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import os
 import sys
 
 from engine import (
+    BaselineModel,
+    AutoencoderModel,
+    EnvelopeChecker,
+    build_matrix,
     build_prompt,
-    extract_patterns,
-    generate_rules,
+    evaluate,
+    generate_lockdown,
+    learn_profiles,
     parse_file,
-    scanner_ips,
-    suggest_exclusions,
-    suggest_hardening,
-    summarize,
+    profile_summary,
+    reconstruct_sessions,
     to_csv,
+    to_json,
 )
+from engine.sessions import SequenceModel
+
+
+def _anomaly_csv(verdicts) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["endpoint", "method", "ml_score", "ml_anomalous",
+                "session_surprisal", "session_anomalous",
+                "violations", "label", "uri"])
+    for v in verdicts:
+        if not v.outside_envelope:
+            continue
+        w.writerow([
+            v.endpoint, v.request.method, f"{v.ml_score:.2f}", v.ml_anomalous,
+            f"{v.session_surprisal:.2f}", v.session_anomalous,
+            "; ".join(f"{x.kind}:{x.detail}" for x in v.violations),
+            v.request.label, v.request.raw_uri[:160],
+        ])
+    return buf.getvalue()
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="ModSecurity traffic pattern analyzer")
-    ap.add_argument("logfile", help="ModSecurity JSON audit log (one object per line)")
-    ap.add_argument("--out", default="out", help="output directory (default: out/)")
-    ap.add_argument("--claude", action="store_true",
-                    help="call the Claude API (needs ANTHROPIC_API_KEY) to draft rules")
-    ap.add_argument("--top", type=int, default=15, help="how many patterns to print")
+    ap = argparse.ArgumentParser(description="Behavioural WAF baselining")
+    ap.add_argument("--baseline", required=True, help="request log of NORMAL traffic to learn from")
+    ap.add_argument("--score", help="request log to score against the baseline (default: reuse baseline)")
+    ap.add_argument("--out", default="out")
+    ap.add_argument("--autoencoder", action="store_true", help="use the torch autoencoder tier if available")
+    ap.add_argument("--claude", action="store_true", help="call Claude to draft the lockdown (needs ANTHROPIC_API_KEY)")
+    ap.add_argument("--top", type=int, default=15)
     args = ap.parse_args(argv)
 
-    events, skipped = parse_file(args.logfile)
-    if not events:
-        print(f"No parseable events in {args.logfile} (skipped {skipped} lines).",
-              file=sys.stderr)
+    base, skb = parse_file(args.baseline)
+    if not base:
+        print(f"No parseable requests in {args.baseline}", file=sys.stderr)
         return 1
 
-    patterns = extract_patterns(events)
-    summ = summarize(events, patterns)
-    scanners = scanner_ips(events)
+    # ---- LEARN ----
+    profiles = learn_profiles(base)
+    seq = SequenceModel().fit(reconstruct_sessions(base))
+    Model = AutoencoderModel if args.autoencoder else BaselineModel
+    model = Model().fit(build_matrix(base))
+    checker = EnvelopeChecker(profiles)
+
+    # ---- SCORE ----
+    score_reqs, sks = parse_file(args.score) if args.score else (base, 0)
+    verdicts = evaluate(score_reqs, model, checker, seq=seq)
 
     os.makedirs(args.out, exist_ok=True)
-    csv_text = to_csv(patterns)
-    _write(os.path.join(args.out, "patterns.csv"), csv_text)
-    _write(os.path.join(args.out, "EXCLUSIONS-AUTO.conf"), suggest_exclusions(patterns))
-    _write(os.path.join(args.out, "HARDENING-AUTO.conf"), suggest_hardening(patterns))
+    profile_json = to_json(profiles, seq)
+    _w(os.path.join(args.out, "profile.json"), profile_json)
+    _w(os.path.join(args.out, "profile.csv"), to_csv(profiles))
+    anom_csv = _anomaly_csv(verdicts)
+    _w(os.path.join(args.out, "anomalies.csv"), anom_csv)
 
     if args.claude:
-        result = generate_rules(csv_text)
-        if result["mode"] == "api":
-            _write(os.path.join(args.out, "claude_rules.conf"), result["rules"])
-            print("Claude API drafted rules -> claude_rules.conf")
+        res = generate_lockdown(profile_json, anom_csv)
+        if res["mode"] == "api":
+            _w(os.path.join(args.out, "claude_lockdown.conf"), res["rules"])
+            print("Claude drafted lockdown -> claude_lockdown.conf")
         else:
-            _write(os.path.join(args.out, "claude_prompt.txt"), result["prompt"])
-            print("No API key/SDK — wrote prompt to claude_prompt.txt (paste into claude.ai)")
+            _w(os.path.join(args.out, "claude_prompt.txt"), res["prompt"])
+            print("No API key/SDK — wrote claude_prompt.txt (paste into claude.ai)")
     else:
-        _write(os.path.join(args.out, "claude_prompt.txt"), build_prompt(csv_text))
+        _w(os.path.join(args.out, "claude_prompt.txt"), build_prompt(profile_json, anom_csv))
 
-    # ---- terminal report ----
-    print("\n=== traffic pattern summary ===")
-    for k, v in summ.items():
-        print(f"  {k:>24}: {v}")
-    if skipped:
-        print(f"  {'unparseable lines':>24}: {skipped}")
-
-    print(f"\n=== top {args.top} patterns ===")
-    hdr = f"{'verdict':<22} {'fp':>4} {'cnt':>5} {'IPs':>4}  rule    location"
-    print(hdr)
-    print("-" * len(hdr))
-    for p in patterns[: args.top]:
-        print(f"{p.verdict:<22} {p.fp_score:>4.2f} {p.count:>5} "
-              f"{p.distinct_clients:>4}  {p.rule_id:<7} {p.path} {p.location}")
-
-    if scanners:
-        print("\n=== scanner-like source IPs (broad endpoint sweep) ===")
-        for s in scanners[:10]:
-            print(f"  {s.client_ip:<18} {s.distinct_paths} distinct paths, {s.hit_count} hits")
-
-    print(f"\nWrote CSV + generated confs to {args.out}/")
+    _report(profiles, model, verdicts, seq, args, skb + sks)
+    print(f"\nWrote profile + anomalies to {args.out}/")
     return 0
 
 
-def _write(path: str, text: str) -> None:
+def _report(profiles, model, verdicts, seq, args, skipped):
+    summ = profile_summary(profiles)
+    print("\n=== learned baseline ===")
+    for k, v in summ.items():
+        print(f"  {k:>28}: {v}")
+    print(f"  {'ml block threshold (p99)':>28}: {model.threshold_:.2f}")
+    print(f"  {'model':>28}: {type(model).__name__}")
+    if skipped:
+        print(f"  {'unparseable lines':>28}: {skipped}")
+
+    outside = [v for v in verdicts if v.outside_envelope]
+    print(f"\n=== scoring {len(verdicts)} requests ===")
+    print(f"  outside envelope: {len(outside)}  "
+          f"(ml={sum(v.ml_anomalous for v in verdicts)}, "
+          f"envelope={sum(1 for v in verdicts if v.violations)}, "
+          f"session={sum(v.session_anomalous for v in verdicts)})")
+    labelled = [v for v in verdicts if v.request.label]
+    if labelled:
+        ab = [v for v in labelled if v.request.label == "abnormal"]
+        caught = sum(1 for v in ab if v.outside_envelope)
+        norm = [v for v in labelled if v.request.label == "normal"]
+        fp = sum(1 for v in norm if v.outside_envelope)
+        print(f"  labelled eval: caught {caught}/{len(ab)} abnormal, "
+              f"{fp}/{len(norm)} normal false-flagged")
+
+    print(f"\n=== top {args.top} anomalous requests ===")
+    outside.sort(key=lambda v: (len(v.violations), v.ml_score), reverse=True)
+    for v in outside[: args.top]:
+        why = "; ".join(f"{x.kind}" for x in v.violations)
+        if v.session_anomalous:
+            why = (why + "; " if why else "") + f"session(surprisal={v.session_surprisal:.1f})"
+        why = why or "ml-only"
+        print(f"  [{v.request.label or '?':>8}] {v.endpoint:<28} ml={v.ml_score:5.2f} {why}")
+
+    print("\n=== normal session flow (top transitions) ===")
+    for a, b, p, c in seq.top_transitions(8):
+        print(f"  {a:>22} -> {b:<26} p={p:.2f} ({c})")
+
+
+def _w(path, text):
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
 

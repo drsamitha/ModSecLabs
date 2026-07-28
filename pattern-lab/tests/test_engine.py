@@ -1,102 +1,136 @@
-"""Tests for the pattern engine. Run: python -m pytest (or python tests/test_engine.py)."""
+"""
+Tests for the behavioural baselining engine.
+Run: python tests/test_engine.py   (or python -m pytest)
+"""
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engine import extract_patterns, parse_lines, suggest_exclusions, to_csv
-from engine.parser import parse_event
+from engine import (
+    BaselineModel,
+    EnvelopeChecker,
+    build_matrix,
+    evaluate,
+    infer_type,
+    learn_profiles,
+    parse_lines,
+    reconstruct_sessions,
+    template_path,
+)
+from engine.sessions import SequenceModel
 
 
-def _audit(rule_id, uri, data, ip="1.2.3.4", code=403, score=5, ua="Mozilla"):
-    return {
-        "transaction": {
-            "client_ip": ip,
-            "request": {"method": "GET", "uri": uri, "headers": {"User-Agent": ua}},
-            "response": {"http_code": code},
-            "messages": [
-                {"message": "m", "details": {"ruleId": str(rule_id), "data": data}},
-                {"message": f"Inbound Anomaly Score Exceeded (Total Score: {score})",
-                 "details": {"ruleId": "949110", "data": ""}},
-            ],
-        }
-    }
+def _req(method, uri, ip="10.0.0.1", sess="", ts="", label="", status=200, body=0):
+    return json.dumps({
+        "method": method, "uri": uri, "client_ip": ip, "session_id": sess,
+        "ts": ts, "label": label, "status": status, "body_size": body,
+        "headers": {"User-Agent": "Mozilla/5.0"},
+    })
 
 
-def test_parser_extracts_location_and_args():
-    ev = parse_event(_audit(
-        "921151", "/oauth2/authorize?redirect_uri=https://a.b/cb&state=xyz",
-        "Matched Data: https://a.b/cb found within ARGS:redirect_uri: https://a.b/cb"))
-    assert ev.path == "/oauth2/authorize"
-    assert "redirect_uri" in ev.query_args and "state" in ev.query_args
-    assert ev.hits[0].matched_location == "ARGS:redirect_uri"
-    assert ev.anomaly_score == 5
-    assert ev.blocked
+def _oidc(ip, sess, t0=0):
+    """A well-formed OIDC flow as 5 request lines."""
+    return [
+        _req("GET", "/oauth2/authorize?client_id=spa&redirect_uri=https://a.example/cb&state=abc", ip, sess, f"2026-07-28T00:00:{t0:02d}Z"),
+        _req("GET", "/authenticationendpoint/login.do?sessionDataKey=%s" % sess, ip, sess, f"2026-07-28T00:00:{t0+1:02d}Z"),
+        _req("POST", "/commonauth?type=oidc", ip, sess, f"2026-07-28T00:00:{t0+2:02d}Z"),
+        _req("POST", "/oauth2/token?grant_type=authorization_code&code=abcdef123456&client_id=spa", ip, sess, f"2026-07-28T00:00:{t0+3:02d}Z"),
+        _req("GET", "/oauth2/userinfo", ip, sess, f"2026-07-28T00:00:{t0+4:02d}Z"),
+    ]
 
 
-def test_parser_skips_garbage():
-    events, skipped = parse_lines(["not json", "", "{bad", json.dumps(_audit(
-        "942100", "/x?a=1", "Matched Data: x found within ARGS:a: x"))])
-    assert len(events) == 1
-    assert skipped == 2
-
-
-def test_false_positive_is_broad_and_benign():
-    # 40 distinct clients, benign redirect URLs, no attack signature.
+def _baseline(n=60):
     lines = []
-    for i in range(40):
-        url = f"https://app{i}.example.com/cb"
-        lines.append(json.dumps(_audit(
-            "921151", f"/oauth2/authorize?redirect_uri={url}",
-            f"Matched Data: {url} found within ARGS:redirect_uri: {url}",
-            ip=f"10.0.0.{i}")))
-    events, _ = parse_lines(lines)
-    patterns = extract_patterns(events)
-    assert len(patterns) == 1
-    assert patterns[0].verdict == "likely_false_positive"
-    assert patterns[0].fp_score > 0.6
+    for i in range(n):
+        lines += _oidc(f"10.0.0.{i}", f"s{i}")
+    return parse_lines(lines)[0]
 
 
-def test_real_attack_is_narrow_and_signatured():
-    lines = []
-    for i in range(12):
-        p = "' UNION SELECT username,password FROM users--"
-        lines.append(json.dumps(_audit(
-            "942100", f"/login?user={p}",
-            f"Matched Data: UNION found within ARGS:user: {p}",
-            ip="45.9.148.3", score=15)))
-    events, _ = parse_lines(lines)
-    patterns = extract_patterns(events)
-    assert patterns[0].verdict == "likely_attack"
-    assert patterns[0].fp_score < 0.35
+def test_infer_type():
+    assert infer_type("12345") == "int"
+    assert infer_type("9f8c1a2b-3d4e-5f60-7182-93a4b5c6d7e8") == "uuid"
+    assert infer_type("https://app.example/cb") == "url"
+    assert infer_type("") == "empty"
 
 
-def test_meta_rules_are_filtered():
-    events, _ = parse_lines([json.dumps(_audit(
-        "942100", "/x?a=1", "Matched Data: x found within ARGS:a: x"))])
-    patterns = extract_patterns(events)
-    # 949110 present in the event must not become its own pattern.
-    assert all(not p.rule_id.startswith("949") for p in patterns)
+def test_template_collapses_values_not_routes():
+    assert template_path("/scim2/Users/9f8c1a2b-3d4e-5f60-7182-93a4b5c6d7e8") == "/scim2/Users/{var}"
+    assert template_path("/scim2/Users/42") == "/scim2/Users/{var}"
+    # a pure-alpha route segment must NOT be collapsed
+    assert template_path("/authenticationendpoint/login.do") == "/authenticationendpoint/login.do"
 
 
-def test_exclusion_is_scoped_to_one_target():
-    lines = [json.dumps(_audit(
-        "921151", f"/oauth2/authorize?redirect_uri=https://a{i}.com/cb",
-        f"Matched Data: https://a{i}.com found within ARGS:redirect_uri: https://a{i}.com/cb",
-        ip=f"10.0.0.{i}")) for i in range(20)]
-    events, _ = parse_lines(lines)
-    conf = suggest_exclusions(extract_patterns(events))
-    assert "ctl:ruleRemoveTargetById=921151;ARGS:redirect_uri" in conf
-    assert "@beginsWith /oauth2/authorize" in conf
+def test_profile_learns_endpoints_and_params():
+    profiles = learn_profiles(_baseline())
+    assert "/oauth2/authorize" in profiles
+    ep = profiles["/oauth2/authorize"]
+    assert ep.confidence == "high"
+    assert "GET" in ep.allowed_methods
+    assert "redirect_uri" in ep.params
+    assert ep.params["redirect_uri"].dominant_type == "url"
 
 
-def test_csv_has_header_and_rows():
-    events, _ = parse_lines([json.dumps(_audit(
-        "942100", "/x?a=1", "Matched Data: x found within ARGS:a: x"))])
-    csv_text = to_csv(extract_patterns(events))
-    assert csv_text.startswith("rule_id,path,location")
-    assert "942100" in csv_text
+def test_envelope_flags_unexpected_param_and_method():
+    profiles = learn_profiles(_baseline())
+    checker = EnvelopeChecker(profiles)
+    reqs, _ = parse_lines([_req("GET", "/oauth2/token?grant_type=x&code=abcdef123456&debug=1&cmd=whoami")])
+    kinds = {v.kind for v in checker.check(reqs[0])}
+    assert "unexpected_param" in kinds
+    reqs2, _ = parse_lines([_req("DELETE", "/oauth2/userinfo")])
+    assert "method" in {v.kind for v in checker.check(reqs2[0])}
+
+
+def test_unknown_endpoint_flagged():
+    profiles = learn_profiles(_baseline())
+    checker = EnvelopeChecker(profiles)
+    reqs, _ = parse_lines([_req("GET", "/carbon/admin/login.jsp")])
+    assert any(v.kind == "unknown_endpoint" for v in checker.check(reqs[0]))
+
+
+def test_ml_model_scores_normal_low_and_outlier_high():
+    base = _baseline()
+    model = BaselineModel().fit(build_matrix(base))
+    # a request with a wildly long param should score above the normal threshold
+    outlier, _ = parse_lines([_req("GET", "/oauth2/authorize?redirect_uri=" + "A" * 500)])
+    assert model.score(build_matrix(outlier))[0] > model.threshold_
+
+
+def test_session_model_flags_out_of_order_flow():
+    base = _baseline()
+    seq = SequenceModel().fit(reconstruct_sessions(base))
+    # token WITHOUT a preceding authorize — a never-seen start transition
+    bad, _ = parse_lines([
+        _req("POST", "/oauth2/token?grant_type=x&code=abcdef123456", "9.9.9.9", "bad", "2026-07-28T01:00:00Z"),
+        _req("GET", "/oauth2/userinfo", "9.9.9.9", "bad", "2026-07-28T01:00:01Z"),
+    ])
+    surprisal, rare = seq.score_session(bad)
+    assert any(p == 0.0 for *_, p in rare)  # contains an unseen transition
+
+
+def test_end_to_end_catches_abnormal_not_normal():
+    base = _baseline()
+    profiles = learn_profiles(base)
+    seq = SequenceModel().fit(reconstruct_sessions(base))
+    model = BaselineModel().fit(build_matrix(base))
+    checker = EnvelopeChecker(profiles)
+    score = list(base)  # normal
+    score += parse_lines([_req("GET", "/oauth2/token?grant_type=x&code=abcdef123456&cmd=whoami", "5.5.5.5", "ab", "2026-07-28T02:00:00Z", "abnormal")])[0]
+    verdicts = evaluate(score, model, checker, seq=seq)
+    ab = [v for v in verdicts if v.request.label == "abnormal"]
+    assert all(v.outside_envelope for v in ab)
+    fp = sum(1 for v in verdicts if not v.request.label and v.outside_envelope)
+    assert fp <= 2  # normal false-flags stay near zero
+
+
+def test_session_reconstruction_orders_by_timestamp():
+    # shuffled input must still reconstruct in chronological order
+    lines = _oidc("10.0.0.1", "s")
+    reqs, _ = parse_lines(list(reversed(lines)))
+    sessions = reconstruct_sessions(reqs)
+    assert len(sessions) == 1
+    assert sessions[0][0].path == "/oauth2/authorize"  # first chronologically
 
 
 if __name__ == "__main__":

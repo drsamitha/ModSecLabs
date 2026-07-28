@@ -3,119 +3,134 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pattern-lab — WAF traffic patterns</title>
+<title>pattern-lab — behavioural baseline</title>
 <style>
   :root{
     --bg:#141d2b; --panel:#1a2332; --border:#2f3f5f; --ink:#c5d1eb; --muted:#5c6b8a;
-    --accent:#9fef00; --fp:#33b1ff; --attack:#ff5c7c; --review:#ffb454;
+    --accent:#9fef00; --norm:#33b1ff; --anom:#ff5c7c; --warn:#ffb454;
   }
   *{box-sizing:border-box}
   body{font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
        background:var(--bg); color:var(--ink); margin:0; padding:1.5rem;}
-  h1{color:var(--accent); margin:.2rem 0; letter-spacing:.5px;
-     text-shadow:0 0 12px rgba(159,239,0,.35);}
-  h2{color:#c5d1eb; border-bottom:1px solid var(--border); padding-bottom:.3rem;
-     margin-top:2rem; font-size:1.05rem;}
+  h1{color:var(--accent); margin:.2rem 0; letter-spacing:.5px; text-shadow:0 0 12px rgba(159,239,0,.35);}
+  h2{color:#c5d1eb; border-bottom:1px solid var(--border); padding-bottom:.3rem; margin-top:2rem; font-size:1.05rem;}
   .sub{color:var(--muted); font-size:.8rem; margin-top:0}
-  .grid{display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));}
-  .tile{background:var(--panel); border:1px solid var(--border); border-radius:10px;
-        padding:1rem 1.1rem;}
-  .tile .n{font-size:2rem; font-weight:700; color:var(--accent);}
-  .tile .l{color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.5px;}
-  .tile.fp .n{color:var(--fp)} .tile.attack .n{color:var(--attack)} .tile.review .n{color:var(--review)}
-  table{width:100%; border-collapse:collapse; font-size:.82rem; margin-top:.5rem;}
-  th,td{text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--border);}
-  th{color:var(--muted); text-transform:uppercase; font-size:.7rem; letter-spacing:.5px;}
-  td.mono{font-family:inherit}
-  .badge{padding:.12rem .5rem; border-radius:20px; font-size:.68rem; font-weight:700; white-space:nowrap;}
-  .b-fp{background:rgba(51,177,255,.15); color:var(--fp); border:1px solid var(--fp);}
-  .b-attack{background:rgba(255,92,124,.15); color:var(--attack); border:1px solid var(--attack);}
-  .b-review{background:rgba(255,180,84,.15); color:var(--review); border:1px solid var(--review);}
-  .bar-row{display:flex; align-items:center; gap:.6rem; margin:.3rem 0; font-size:.78rem;}
-  .bar-label{width:38%; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-  .bar-track{flex:1; background:#0d1522; border-radius:5px; height:16px; overflow:hidden;}
-  .bar-fill{height:100%; border-radius:5px;}
-  .bar-n{width:3rem; text-align:right; color:var(--muted);}
-  .dl a{display:inline-block; margin-right:.5rem; margin-top:.5rem; padding:.4rem .8rem;
-        background:var(--panel); border:1px solid var(--accent); border-radius:6px;
-        color:var(--accent); text-decoration:none; font-size:.8rem;}
+  .grid{display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}
+  .tile{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1rem 1.1rem;}
+  .tile .n{font-size:1.9rem; font-weight:700; color:var(--accent);}
+  .tile .l{color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.5px;}
+  .tile.norm .n{color:var(--norm)} .tile.anom .n{color:var(--anom)}
+  .cols{display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;}
+  @media(max-width:820px){.cols{grid-template-columns:1fr}}
+  table{width:100%; border-collapse:collapse; font-size:.8rem; margin-top:.5rem;}
+  th,td{text-align:left; padding:.4rem .5rem; border-bottom:1px solid var(--border); vertical-align:top;}
+  th{color:var(--muted); text-transform:uppercase; font-size:.68rem; letter-spacing:.5px;}
+  .badge{padding:.1rem .5rem; border-radius:20px; font-size:.66rem; font-weight:700; white-space:nowrap;}
+  .b-norm{background:rgba(51,177,255,.15); color:var(--norm); border:1px solid var(--norm);}
+  .b-anom{background:rgba(255,92,124,.15); color:var(--anom); border:1px solid var(--anom);}
+  .b-warn{background:rgba(255,180,84,.15); color:var(--warn); border:1px solid var(--warn);}
+  .flow{list-style:none; padding:0; margin:.4rem 0; font-size:.8rem;}
+  .flow li{display:flex; align-items:center; gap:.5rem; margin:.25rem 0;}
+  .flow .from{color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; text-align:right;}
+  .flow .to{color:var(--norm); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;}
+  .flow .arw{color:var(--muted)} .flow .p{color:var(--muted); width:3.2rem; text-align:right;}
+  .hist{display:flex; align-items:flex-end; gap:2px; height:120px; margin-top:.6rem; padding:.4rem; background:#0d1522; border-radius:8px;}
+  .hist .bar{flex:1; background:var(--norm); border-radius:2px 2px 0 0; min-height:1px;}
+  .hist .bar.over{background:var(--anom);}
+  .thr{color:var(--anom); font-size:.72rem;}
+  .dl a{display:inline-block; margin:.5rem .5rem 0 0; padding:.4rem .8rem; background:var(--panel);
+        border:1px solid var(--accent); border-radius:6px; color:var(--accent); text-decoration:none; font-size:.8rem;}
   .dl a:hover{background:var(--accent); color:#111927;}
-  .reasons{color:var(--muted); font-size:.72rem;}
-  .fpbar{display:inline-block; width:44px; height:8px; background:#0d1522; border-radius:4px; vertical-align:middle;}
-  .fpbar>span{display:block; height:100%; border-radius:4px; background:var(--fp);}
-  code{background:#0d1522; color:var(--accent); padding:.05rem .3rem; border-radius:4px;}
+  code,.mono{font-family:inherit} code{background:#0d1522; color:var(--accent); padding:.05rem .3rem; border-radius:4px;}
+  .why{color:var(--muted); font-size:.72rem;}
+  .env{color:var(--muted); font-size:.72rem;}
 </style>
 </head>
 <body>
-  <h1>🛡️ pattern-lab</h1>
-  <p class="sub">WAF traffic pattern recognition &amp; CRS rule-tuning · source: <code>{{ log }}</code>
-     {% if skipped %}· {{ skipped }} unparseable lines skipped{% endif %}</p>
+  <h1>🛰️ pattern-lab</h1>
+  <p class="sub">Behavioural baseline &amp; positive-security anomaly view ·
+     baseline <code>{{ baseline }}</code> → scoring <code>{{ score }}</code></p>
 
   <h2>Overview</h2>
   <div class="grid">
-    <div class="tile"><div class="n">{{ summary.events }}</div><div class="l">flagged requests</div></div>
-    <div class="tile"><div class="n">{{ summary.distinct_clients }}</div><div class="l">distinct clients</div></div>
-    <div class="tile"><div class="n">{{ summary.patterns }}</div><div class="l">patterns</div></div>
-    <div class="tile fp"><div class="n">{{ summary.likely_false_positive }}</div><div class="l">likely FP</div></div>
-    <div class="tile attack"><div class="n">{{ summary.likely_attack }}</div><div class="l">likely attack</div></div>
-    <div class="tile review"><div class="n">{{ summary.review }}</div><div class="l">to review</div></div>
+    <div class="tile"><div class="n">{{ summary.endpoints }}</div><div class="l">endpoints learned</div></div>
+    <div class="tile"><div class="n">{{ summary.total_params }}</div><div class="l">parameters profiled</div></div>
+    <div class="tile"><div class="n">{{ summary.sessions }}</div><div class="l">baseline sessions</div></div>
+    <div class="tile norm"><div class="n">{{ summary.scored }}</div><div class="l">requests scored</div></div>
+    <div class="tile anom"><div class="n">{{ summary.outside }}</div><div class="l">outside envelope</div></div>
+    {% if summary.caught is not none %}
+    <div class="tile"><div class="n">{{ summary.caught }}/{{ summary.abnormal_total }}</div><div class="l">abnormal caught</div></div>
+    <div class="tile"><div class="n">{{ summary.false_flags }}/{{ summary.normal_total }}</div><div class="l">normal false-flag</div></div>
+    {% endif %}
   </div>
 
-  <h2>Top patterns by volume</h2>
-  {% for b in bars %}
-    <div class="bar-row">
-      <span class="bar-label" title="{{ b.label }}">{{ b.label }}</span>
-      <span class="bar-track">
-        <span class="bar-fill" style="width:{{ b.pct }}%;
-          background:{% if b.verdict=='likely_attack' %}var(--attack){% elif b.verdict=='likely_false_positive' %}var(--fp){% else %}var(--review){% endif %};"></span>
-      </span>
-      <span class="bar-n">{{ b.count }}</span>
+  <div class="cols">
+    <div>
+      <h2>Normal session flow</h2>
+      <p class="sub">Learned first-order transitions between endpoints (the OIDC dance).</p>
+      <ul class="flow">
+        {% for a,b,p,c in transitions %}
+          <li><span class="from" title="{{a}}">{{ a }}</span>
+              <span class="arw">→</span>
+              <span class="to" title="{{b}}">{{ b }}</span>
+              <span class="p">{{ '%.2f'|format(p) }}</span></li>
+        {% endfor %}
+      </ul>
     </div>
-  {% endfor %}
+    <div>
+      <h2>Anomaly-score distribution</h2>
+      <p class="sub">Per-request reconstruction error. <span class="thr">Red = above the p99 block threshold ({{ threshold }}).</span></p>
+      <div class="hist">
+        {% for b in hist %}<div class="bar {{ 'over' if b.over }}" style="height:{{ b.h }}%" title="from {{ b.x0 }}"></div>{% endfor %}
+      </div>
+    </div>
+  </div>
 
-  <h2>Download artifacts</h2>
+  <h2>Download artifacts <span class="sub">(the hand-off to Claude)</span></h2>
   <p class="dl">
-    <a href="/download/csv?log={{ log }}">⬇ patterns.csv</a>
-    <a href="/download/exclusions?log={{ log }}">⬇ EXCLUSIONS-AUTO.conf</a>
-    <a href="/download/hardening?log={{ log }}">⬇ HARDENING-AUTO.conf</a>
-    <a href="/download/prompt?log={{ log }}">⬇ claude_prompt.txt</a>
+    <a href="/download/profile-json?baseline={{ baseline }}&score={{ score }}">⬇ profile.json</a>
+    <a href="/download/profile-csv?baseline={{ baseline }}&score={{ score }}">⬇ profile.csv</a>
+    <a href="/download/prompt?baseline={{ baseline }}&score={{ score }}">⬇ claude_prompt.txt</a>
   </p>
 
-  <h2>Classified patterns</h2>
+  <h2>Learned endpoint envelopes</h2>
   <table>
-    <thead><tr>
-      <th>verdict</th><th>fp</th><th>count</th><th>clients</th><th>rule</th>
-      <th>path</th><th>location</th><th>why</th>
-    </tr></thead>
+    <thead><tr><th>endpoint</th><th>conf</th><th>methods</th><th>count</th><th>parameters (type · p99 len)</th></tr></thead>
     <tbody>
-    {% for p in patterns %}
+    {% for ep in endpoints %}
       <tr>
-        <td><span class="badge {% if p.verdict=='likely_attack' %}b-attack{% elif p.verdict=='likely_false_positive' %}b-fp{% else %}b-review{% endif %}">
-          {{ p.verdict.replace('likely_','').replace('_',' ') }}</span></td>
-        <td><span class="fpbar"><span style="width:{{ (p.fp_score*100)|int }}%"></span></span></td>
-        <td class="mono">{{ p.count }}</td>
-        <td class="mono">{{ p.distinct_clients }}</td>
-        <td class="mono">{{ p.rule_id }}</td>
-        <td class="mono">{{ p.path }}</td>
-        <td class="mono">{{ p.location }}</td>
-        <td class="reasons">{{ p.reasons|join('; ') }}</td>
+        <td class="mono">{{ ep.template }}</td>
+        <td><span class="badge {{ 'b-norm' if ep.confidence=='high' else 'b-warn' }}">{{ ep.confidence }}</span></td>
+        <td class="mono">{{ ep.allowed_methods|join(', ') }}</td>
+        <td class="mono">{{ ep.count }}</td>
+        <td class="env">
+          {% for pp in ep.params.values() %}{{ pp.name }}<span style="color:#3d4a63">:{{ pp.dominant_type }}·{{ pp.len_p99 }}{% if pp.is_enum %}·enum{% endif %}</span>{% if not loop.last %} · {% endif %}{% endfor %}
+        </td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
 
-  {% if scanners %}
-  <h2>Scanner-like source IPs</h2>
+  <h2>Requests outside the envelope <span class="sub">({{ summary.outside }} total, top 40)</span></h2>
   <table>
-    <thead><tr><th>client IP</th><th>distinct paths swept</th><th>rule hits</th></tr></thead>
+    <thead><tr><th>label</th><th>endpoint</th><th>method</th><th>ml</th><th>session</th><th>why</th></tr></thead>
     <tbody>
-    {% for s in scanners %}
-      <tr><td class="mono">{{ s.client_ip }}</td><td class="mono">{{ s.distinct_paths }}</td><td class="mono">{{ s.hit_count }}</td></tr>
+    {% for v in anomalies %}
+      <tr>
+        <td>{% if v.request.label %}<span class="badge {{ 'b-anom' if v.request.label=='abnormal' else 'b-norm' }}">{{ v.request.label }}</span>{% endif %}</td>
+        <td class="mono">{{ v.endpoint }}</td>
+        <td class="mono">{{ v.request.method }}</td>
+        <td class="mono" style="color:{{ '#ff5c7c' if v.ml_anomalous else '#5c6b8a' }}">{{ '%.2f'|format(v.ml_score) }}</td>
+        <td class="mono" style="color:{{ '#ff5c7c' if v.session_anomalous else '#5c6b8a' }}">{{ '%.1f'|format(v.session_surprisal) }}</td>
+        <td class="why">
+          {% for x in v.violations %}{{ x.kind }}{% if not loop.last %}, {% endif %}{% endfor %}
+          {% if v.session_anomalous %}{% if v.violations %}, {% endif %}abnormal-flow{% endif %}
+        </td>
+      </tr>
     {% endfor %}
     </tbody>
   </table>
-  {% endif %}
 
-  <p class="sub" style="margin-top:2rem">pattern-lab · offline heuristic classifier · every verdict is explained in the <em>why</em> column and the CSV.</p>
+  <p class="sub" style="margin-top:2rem">pattern-lab · learns normal, scores deviation, hands the profile to Claude for lockdown · it does not write rules itself.</p>
 </body>
 </html>

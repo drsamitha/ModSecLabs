@@ -1,33 +1,31 @@
-# pattern-lab test environment
-# =============================
+# pattern-lab test environment — behavioural baselining
+# ======================================================
 #
 #   [ trafficgen ] --> :8080 nginx + ModSecurity + OWASP CRS --> :9443 WSO2 IS 7.2
-#                            (the WAF: inspects & audit-logs)     (real identity server)
+#                            (WAF in DetectionOnly during learning)  (real identity server)
 #                                       |
-#                                       └─ writes JSON audit log to ./audit/
-#                                                    |
-#   [ dashboard :8050 ] <── engine reads ./audit/ ──┘
+#          request log (JSON, one/line) captured to ./capture/
+#                                       |
+#   [ dashboard :8050 ] <── engine learns baseline + scores mixed ──┘
 #
-# The point of this stack: put a REAL WSO2 Identity Server behind the OWASP
-# Core Rule Set, drive realistic OIDC/SAML/SCIM traffic (plus a little attack
-# traffic) at it, capture ModSecurity's audit log, and let the pattern engine
-# tell you which CRS rules are false-positiving on legitimate IdP parameters.
+# The workflow is POSITIVE SECURITY: observe legitimate traffic, learn the app's
+# normal envelope, then hand the profile to Claude to lock the app down to it —
+# on top of the CRS, which stays as the negative-security baseline.
 #
-#   docker compose up -d           # brings up IS + WAF + sample SPA
-#   docker compose run --rm trafficgen   # generate traffic (writes ./audit/)
-#   docker compose up -d dashboard # http://localhost:8050
+#   docker compose up -d                                   # IS + WAF + sample SPA
+#   docker compose --profile gen run --rm -e MODE=baseline trafficgen   # learn window
+#   docker compose --profile gen run --rm -e MODE=mixed    trafficgen   # a day to score
+#   docker compose --profile dash up -d dashboard          # http://localhost:8050
+#   # or on the host:
+#   python analyze.py --baseline capture/baseline.jsonl --score capture/mixed.jsonl --out out/
 #
-# NOTE: WSO2 IS 7.2 needs ~2 GB RAM and ~90s to boot. See README "Where this
-# can fail" for the honest caveats.
+# NOTE: WSO2 IS 7.2 needs ~2 GB RAM and ~90s to boot. See README "Where this can fail".
 services:
   wso2is:
     image: wso2/wso2is:7.2.0
     container_name: patternlab-is
-    # IS serves HTTPS on 9443 with a self-signed cert; the WAF proxies to it.
-    expose:
-      - "9443"
-    ports:
-      - "9443:9443"          # exposed so you can register the sample app in the console
+    expose: ["9443"]
+    ports: ["9443:9443"]
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -sk https://localhost:9443/carbon/admin/login.jsp >/dev/null || exit 1"]
       interval: 15s
@@ -43,53 +41,48 @@ services:
         condition: service_healthy
     environment:
       BACKEND: "https://wso2is:9443"
-      PROXY_SSL_VERIFY: "off"          # IS uses a self-signed cert in the lab
+      PROXY_SSL_VERIFY: "off"
       PORT: "8080"
-      MODSEC_RULE_ENGINE: "On"
+      # DetectionOnly during the learning window: we want to OBSERVE real
+      # traffic shapes, not block them, while building the baseline.
+      MODSEC_RULE_ENGINE: "DetectionOnly"
       PARANOIA: "1"
-      ANOMALY_INBOUND: "5"
-      # Emit the audit log as ONE JSON object per line into a shared volume so
-      # the pattern engine can read it. This is the whole integration point.
-      MODSEC_AUDIT_LOG: "/var/log/modsec/audit.jsonl"
-      MODSEC_AUDIT_LOG_FORMAT: "JSON"
-      MODSEC_AUDIT_ENGINE: "RelevantOnly"
-      MODSEC_AUDIT_STORAGE_DIR: "/var/log/modsec"
+      # Emit a JSON access log (every request, allowed or not) in the engine's
+      # schema to the shared ./capture volume. This is the production capture
+      # point; nginx-log-format.conf defines the format.
     volumes:
-      - ./audit:/var/log/modsec
+      - ./capture:/capture
+      - ./trafficgen/nginx-log-format.conf:/etc/nginx/templates/includes/00-req-json-log.conf.template:ro
     ports:
       - "8080:8080"
 
-  # A tiny static SPA standing in for a WSO2 sample JS app (e.g. the OIDC React
-  # sample). It just needs to exist so browser-shaped OIDC redirects have a
-  # plausible redirect_uri origin; the traffic generator does the real driving.
   sampleapp:
     image: nginx:alpine
     container_name: patternlab-spa
     volumes:
       - ./wso2-sample-app:/usr/share/nginx/html:ro
-    ports:
-      - "3000:80"
+    ports: ["3000:80"]
 
-  # Drives realistic traffic THROUGH the WAF. One-shot: `docker compose run`.
   trafficgen:
     build: ./trafficgen
     container_name: patternlab-trafficgen
-    depends_on:
-      - waf
+    depends_on: [waf]
     environment:
       TARGET: "http://waf:8080"
-      REQUESTS: "600"
-    profiles: ["gen"]        # only runs when explicitly invoked
+      MODE: "baseline"
+      SESSIONS: "200"
+    volumes:
+      - ./capture:/capture
+    profiles: ["gen"]
 
-  # The analysis dashboard. Reads the shared audit log the WAF writes.
   dashboard:
     build: ./webapp
     container_name: patternlab-dashboard
     environment:
-      LOGFILE: "/audit/audit.jsonl"
+      BASELINE: "/capture/baseline.jsonl"
+      SCORE: "/capture/mixed.jsonl"
     volumes:
-      - ./audit:/audit:ro
+      - ./capture:/capture:ro
       - ./engine:/app/engine:ro
-    ports:
-      - "8050:8050"
+    ports: ["8050:8050"]
     profiles: ["dash"]
