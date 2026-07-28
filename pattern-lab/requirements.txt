@@ -1,0 +1,6 @@
+# Core engine has ZERO third-party deps (stdlib only) — runs anywhere.
+# These are only for the optional pieces:
+Flask==3.1.3      # webapp/ dashboard
+requests==2.32.3  # trafficgen/ (in-container)
+urllib3==2.2.3    # trafficgen/
+anthropic>=0.40   # optional: analyze.py --claude (live rule generation)
