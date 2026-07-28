@@ -49,11 +49,29 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 Confirm the culprit rule ID from the log (never guess it):
 
 ```bash
-docker logs modseclabs-waf | grep -o '"ruleId":"[0-9]*"[^}]*"data":"[^"]*"' | tail -1
-# "ruleId":"942100", ... "data":"Matched Data: n&Ekn found within ARGS:q: Compare and select from our items"
+docker logs modseclabs-waf | grep -o '"ruleId":"[0-9]*"[^}]*"data":"[^"]*"' | tail -2
+# "ruleId":"942100", ... "data":"Matched Data: ... within ARGS:q: Compare and select from our items"
+# "ruleId":"949110", ... msg "Inbound Anomaly Score Exceeded (Total Score: 5)"
 ```
 
-The rule ID to whitelist is **`942100`**.
+> **⚠️ Two IDs appear — whitelist the right one.** You'll almost always see
+> **`949110`** in a block ("Inbound Anomaly Score Exceeded"). That is the
+> **anomaly-score gate**, not a detection rule — it fires on *every* block.
+> **Never whitelist `949110`** (it would disable blocking site-wide). The ID you
+> whitelist is the **cause**: the rule whose `data` says *"Matched Data … within
+> `ARGS:q`"*. If your terminal only shows the `949110` line, scroll/grep for the
+> `ARGS:q` line — the cause is logged separately.
+>
+> **And your cause ID may not be `942100`.** It depends on your CRS version — on
+> another build the same search may trip `942150`/`942260`/etc. **Take the ID
+> from *your* "Matched Data" line, not from this sheet.** (If you whitelist
+> `942100` and the block persists, you excluded the wrong ID — that is exactly
+> this mistake.)
+
+Here the block came from a **single** scoring rule (`942100`, +5) and the
+threshold is 5, so whitelisting just that one rule drops the score to **0** and
+the anomaly gate stops triggering. The rule ID to whitelist here is **`942100`**
+— substitute whatever your log shows.
 
 ---
 
@@ -121,6 +139,20 @@ clean request            -> 200
 ```
 
 ![The previously blocked search now returns 200](../screenshots/09_whitelisted.png)
+
+Prove the **anomaly gate no longer triggers** for that request — after the
+whitelist there should be **no** "Score Exceeded" event for the benign search:
+
+```bash
+curl -s -o /dev/null --get "http://localhost:8095/search" \
+  --data-urlencode "q=Compare and select from our items"
+docker logs --since 10s modseclabs-waf-wl | grep -c "Score Exceeded"   # -> 0
+```
+
+The count is **0**: with the sole contributor (`942100`) removed, the score for
+that request is 0, so `949110` never fires. That is what "the whitelist stops the
+anomaly trigger" looks like — the request isn't just tolerated, it no longer
+scores at all.
 
 > **Read that result carefully — this is the whole lesson.** Whitelisting
 > `942100` let the honest search through, **and** a real `UNION SELECT` on the

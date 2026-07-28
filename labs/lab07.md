@@ -73,6 +73,27 @@ Three facts to extract, every time:
 
 That's your exclusion, fully specified: *rule 942100, arg q, path /search*.
 
+> **⚠️ Read this or you'll tune the wrong rule.** A block always produces **two**
+> kinds of log line:
+>
+> - the **gate** — rule **`949110`**, *"Inbound Anomaly Score Exceeded (Total
+>   Score: 5)"*. This fires on **every** block and is **never** what you
+>   exclude. Removing `949110` would switch off blocking for the whole site.
+> - the **cause** — the rule that actually matched your input and *added* the
+>   score. It's the line whose `data` says *"Matched Data … within `ARGS:q`"*.
+>   **That** is the ID you scope.
+>
+> Also: **the cause's ID depends on your CRS version.** On the CRS 4.28 used
+> here it's `942100` (libinjection). On another build the same phrase may be
+> caught by `942150`/`942260`/etc. **Always take the ID from *your* log's
+> "Matched Data" line — never copy `942100` blindly from this sheet.**
+
+Here the whole block came from a **single** scoring rule: `942100` added +5, and
+the threshold is 5. So excluding just that one rule drops the score to **0** and
+the request passes cleanly — the anomaly gate never triggers. (When an attack
+trips several rules at once, one exclusion won't unblock it — and that's exactly
+what you want.)
+
 ---
 
 ## 4. Choosing the right tool — from blunt to surgical
