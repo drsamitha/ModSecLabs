@@ -30,8 +30,10 @@ h3 { color:#12306e; font-size:15px; margin-top:1.2rem; }
 code { background:#eef1fb; padding:.1rem .35rem; border-radius:4px;
        font-family:'SF Mono',Consolas,monospace; font-size:11.5px; color:#8a1f6b; }
 pre { background:#0d1330; color:#e6e6f0; padding:.9rem 1rem; border-radius:8px;
-      overflow-x:auto; font-size:11px; line-height:1.45; }
-pre code { background:none; color:inherit; padding:0; }
+      font-size:10.5px; line-height:1.45;
+      white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
+pre code { background:none; color:inherit; padding:0;
+           white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
 blockquote { border-left:4px solid #0b3d91; background:#f2f5ff; margin:1rem 0;
              padding:.6rem 1rem; border-radius:0 6px 6px 0; }
 table { border-collapse:collapse; width:100%; margin:1rem 0; font-size:11.5px; }
