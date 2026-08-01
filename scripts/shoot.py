@@ -21,11 +21,14 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--width", type=int, default=900)
     ap.add_argument("--tag", default="")
+    ap.add_argument("--insecure", action="store_true",
+                     help="ignore TLS errors (self-signed certs, etc.)")
     args = ap.parse_args()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
-        page = browser.new_page(viewport={"width": args.width, "height": 700})
+        page = browser.new_page(viewport={"width": args.width, "height": 700},
+                                 ignore_https_errors=args.insecure)
         resp = page.goto(args.url, wait_until="networkidle", timeout=15000)
         status = resp.status if resp else "?"
         if args.tag:
