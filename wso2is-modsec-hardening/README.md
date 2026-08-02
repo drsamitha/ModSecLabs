@@ -58,8 +58,14 @@ docker build -t wso2is-hardening:base .
 | 4 | [Rate-Limit Auth Endpoints](labs/lab04-rate-limiting.md) | Rate-limit `/oauth2/token` and `/commonauth` — and why ModSecurity itself cannot do this reliably here |
 | 5 | [Admin Console Allow-List](labs/lab05-admin-allowlist.md) | Lock `/carbon`, `/console`, management APIs to trusted IPs — and a real ModSecurity engine bug found along the way |
 | 6 | [Capstone: Virtual Patch](labs/lab06-capstone-virtual-patch.md) | Find and fix a path-normalization bypass of Lab 5, plus a full regression pass |
+| 7 | [ISO/IEC 27001 Mapping & Manual Hardening](labs/lab07-iso27001-mapping.md) | Map every control to Annex A, do the credential/console steps by hand, cross-check against WSO2's official security guidelines |
 
 Run them in order — each stage assumes the previous one's fixes.
+
+A project subagent, `.claude/agents/iam-security-reviewer.md`, reviews
+hardening content in this repo against real IAM/WAF engineering practice and
+ISO/IEC 27001 Annex A — invoke it (or let Claude Code invoke it automatically)
+when adding or changing hardening claims.
 
 ---
 
