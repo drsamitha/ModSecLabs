@@ -53,7 +53,8 @@ ENV BACKEND=https://127.0.0.1:9443 \
     MODSEC_AUDIT_LOG_FORMAT=JSON \
     MODSEC_AUDIT_LOG=/var/log/modsecurity/audit/modsec_audit.log
 
-RUN mkdir -p /var/log/modsecurity/audit /hardening.d && chmod 777 /var/log/modsecurity/audit
+RUN mkdir -p /var/log/modsecurity/audit /var/log/supervisor /hardening.d \
+    && chmod 777 /var/log/modsecurity/audit /var/log/supervisor
 
 # --- Reverse-proxy correctness fixes, baked into every stage ---
 # These are not "hardening" options to opt into per lab -- they're bugs

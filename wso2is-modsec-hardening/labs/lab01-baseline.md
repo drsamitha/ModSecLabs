@@ -30,11 +30,18 @@ docker run -d --name lab01 \
   wso2is-hardening:base
 
 # WSO2 IS takes ~30-60s to finish booting
-docker logs -f lab01 | grep "WSO2 Carbon started"
+docker exec lab01 tail -f /var/log/supervisor/wso2is.out.log | grep -m1 "WSO2 Carbon started"
 ```
 
 `hardening/stage1-baseline/` is empty on purpose — no scripts run, so
 nothing is patched.
+
+All logs go to real files, not `docker logs` — root in with
+`docker exec -it lab01 bash` and tail them like a real server:
+`/var/log/nginx/access.log`, `/var/log/nginx/error.log`,
+`/var/log/supervisor/wso2is.out.log`,
+`/home/wso2carbon/wso2is-7.3.0/repository/logs/wso2carbon.log`, and
+`/var/log/modsecurity/audit/modsec_audit.log`.
 
 ---
 

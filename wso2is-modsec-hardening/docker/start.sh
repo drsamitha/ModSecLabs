@@ -65,5 +65,9 @@ until nginx -t >/tmp/nginx-t.out 2>&1; do
 done
 echo "[start.sh] nginx config OK after $i retries."
 
+echo "[start.sh] Redirecting nginx access/error logs to real files (not stdout/stderr)..."
+rm -f /var/log/nginx/access.log /var/log/nginx/error.log
+touch /var/log/nginx/access.log /var/log/nginx/error.log
+
 echo "[start.sh] Handing off to supervisord (nginx + wso2server.sh)..."
 exec /usr/bin/supervisord -n -c /etc/supervisor/supervisord.conf

@@ -84,7 +84,19 @@ docker run -d --name lab \
   -p 8080:8080 -p 8443:8443 \
   wso2is-hardening:base
 
-docker logs -f lab | grep "WSO2 Carbon started"   # ~30-60s
+docker exec lab tail -f /var/log/supervisor/wso2is.out.log | grep -m1 "WSO2 Carbon started"   # ~30-60s
+```
+
+Logs go to real files, not `docker logs` — this behaves like a real Ubuntu
+server you `docker exec`/root into, not a Docker-idiomatic single-stream
+container. Once it's up:
+
+```bash
+docker exec -it lab bash
+tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+tail -f /var/log/supervisor/wso2is.out.log
+tail -f /home/wso2carbon/wso2is-7.3.0/repository/logs/wso2carbon.log
+tail -f /var/log/modsecurity/audit/modsec_audit.log
 ```
 
 Progress through stages by swapping the `hardening.d` mount (and, from Stage
