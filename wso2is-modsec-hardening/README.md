@@ -21,8 +21,8 @@ OWASP API Security Top 10 applied to OAuth/SCIM/SAML endpoints, WSO2's own
 published hardening guidance, and a set of real disclosed WSO2
 vulnerabilities) shaped the 6-stage curriculum below. Every stage was then
 **built and verified against the real running stack** — including finding and
-working around a genuine engine bug (see Lab 05) and a genuine false
-positive against realistic OAuth traffic (Lab 03), not assumed from the
+working around a genuine engine bug (see Lab 04) and a genuine false
+positive against realistic OAuth traffic (Lab 02), not assumed from the
 research alone.
 
 ---
@@ -53,14 +53,18 @@ docker build -t wso2is-hardening:base .
 | # | Lab | What it does |
 |---|-----|---------------|
 | 1 | [Baseline](labs/lab01-baseline.md) | Naive WSO2 IS behind a barely-configured WAF — see the exposure |
-| 2 | [WSO2 Vendor Hardening](labs/lab02-vendor-hardening.md) | Rotate default creds, enforce HSTS at the edge, stop leaking the Server header |
-| 3 | [CRS Tuned for IAM Traffic](labs/lab03-crs-iam-tuning.md) | Reproduce and fix a real CRS false positive on legitimate OAuth2/SCIM traffic |
-| 4 | [Rate-Limit Auth Endpoints](labs/lab04-rate-limiting.md) | Rate-limit `/oauth2/token` and `/commonauth` — and why ModSecurity itself cannot do this reliably here |
-| 5 | [Admin Console Allow-List](labs/lab05-admin-allowlist.md) | Lock `/carbon`, `/console`, management APIs to trusted IPs — and a real ModSecurity engine bug found along the way |
-| 6 | [Capstone: Virtual Patch](labs/lab06-capstone-virtual-patch.md) | Find and fix a path-normalization bypass of Lab 5, plus a full regression pass |
-| 7 | [ISO/IEC 27001 Mapping & Manual Hardening](labs/lab07-iso27001-mapping.md) | Map every control to Annex A, do the credential/console steps by hand, cross-check against WSO2's official security guidelines |
+| 2 | [CRS Tuned for IAM Traffic](labs/lab03-crs-iam-tuning.md) | Reproduce and fix a real CRS false positive on legitimate OAuth2/SCIM traffic |
+| 3 | [Rate-Limit Auth Endpoints](labs/lab04-rate-limiting.md) | Rate-limit `/oauth2/token` and `/commonauth` — and why ModSecurity itself cannot do this reliably here |
+| 4 | [Admin Console Allow-List](labs/lab05-admin-allowlist.md) | Lock `/carbon`, `/console`, management APIs to trusted IPs — and a real ModSecurity engine bug found along the way |
+| 5 | [Capstone: Virtual Patch](labs/lab06-capstone-virtual-patch.md) | Find and fix a path-normalization bypass of Lab 4, plus a full regression pass |
+| 6 | [ISO/IEC 27001 Mapping & Manual Hardening](labs/lab07-iso27001-mapping.md) | Map every control to Annex A, do the credential/console steps by hand, cross-check against WSO2's official security guidelines |
 
 Run them in order — each stage assumes the previous one's fixes.
+
+Note: lab page filenames keep their original numbers (`lab03`, `lab04`, ...)
+even though the table above renumbers sequentially after retiring the old
+WSO2-vendor-hardening stage — the table's `#` column is presentational, the
+links are what to follow.
 
 A project subagent, `.claude/agents/iam-security-reviewer.md`, reviews
 hardening content in this repo against real IAM/WAF engineering practice and
@@ -84,7 +88,7 @@ docker logs -f lab | grep "WSO2 Carbon started"   # ~30-60s
 ```
 
 Progress through stages by swapping the `hardening.d` mount (and, from Stage
-3 onward, also mounting the matching file from `rules/`) — each lab's own
+2 onward, also mounting the matching file from `rules/`) — each lab's own
 page has the exact command.
 
 ---
@@ -95,14 +99,24 @@ page has the exact command.
    this engine build (`libmodsecurity3` v3.0.16) — `initcol`/`setvar`/
    `expirevar` load without error but never actually block anything.
    Verified with a minimal test rule. Real fix: nginx's own `limit_req`
-   (Lab 04) — which is also how real organizations actually do it.
+   (Lab 03) — which is also how real organizations actually do it.
 
 2. **A rules file with more than one `chain`-based rule group breaks this
    engine's own parsing of its bundled CRS rules**, with a confusing error
    misattributed to an unrelated CRS file. Isolated via minimal reproduction
    (two trivial chain rules; content, ids, and file placement did not
    matter). Fix: `skipAfter`/`SecMarker` instead of `chain` for allow-list
-   logic (Lab 05).
+   logic (Lab 04).
+
+3. **CRS rule 930130 false-positives on `/console/deployment.config.json`**,
+   a legitimate unauthenticated static asset the Console React SPA needs on
+   every page load — the block crashes the SPA's init code and is the real,
+   confirmed root cause of the "Console UI stuck behind the WAF" symptom.
+   Found via controlled A/B testing across nginx/Apache and with/without
+   ModSecurity, isolating this one rule/path pair. Fixed with a scoped
+   exclusion, baked into the Dockerfile for every stage (not opt-in) since
+   it's a correctness fix, not a hardening trade-off — see
+   `rules/console-deployment-config-exclusion.conf`.
 
 ---
 
@@ -113,12 +127,13 @@ wso2is-modsec-hardening/
 ├── Dockerfile                          # WSO2 IS 7.3 + ModSecurity/CRS, one image
 ├── docker/
 │   ├── start.sh                        # renders config, runs hardening.d, validates nginx config, then supervisord
-│   └── supervisord.conf                # runs nginx + wso2server.sh together
+│   ├── supervisord.conf                # runs nginx + wso2server.sh together
+│   └── proxy_backend.conf.template     # baked-in reverse-proxy header/cookie fixes (every stage)
 ├── hardening/
 │   ├── stage1-baseline/                # empty -- no hardening applied
-│   ├── stage2-vendor-hardening/        # 3 scripts: password, HSTS, Server header
 │   └── stage4-rate-limit/              # 2 scripts: nginx limit_req zone + apply
 ├── rules/
+│   ├── console-deployment-config-exclusion.conf  # baked-in CRS 930130 fix (every stage)
 │   ├── stage3-crs-iam-tuning.conf      # scoped CRS exclusions for OAuth/SCIM
 │   ├── stage5-admin-allowlist.conf     # admin IP allow-list (skipAfter, not chain)
 │   └── stage6-virtual-patch.conf       # + t:normalizePath bypass fix
@@ -133,5 +148,5 @@ This is a **lab** configuration. Before using any of this beyond the lab:
   admin network/VPN range.
 - Rotate the admin password to something you control, not the value shown
   here.
-- The rate-limit thresholds (Lab 04) are tuned for a fast lab demo, not
+- The rate-limit thresholds (Lab 03) are tuned for a fast lab demo, not
   production traffic patterns — tune `rate=`/`burst=` to your real usage.

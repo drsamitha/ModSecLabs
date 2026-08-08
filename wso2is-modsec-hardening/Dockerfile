@@ -55,6 +55,31 @@ ENV BACKEND=https://127.0.0.1:9443 \
 
 RUN mkdir -p /var/log/modsecurity/audit /hardening.d && chmod 777 /var/log/modsecurity/audit
 
+# --- Reverse-proxy correctness fixes, baked into every stage ---
+# These are not "hardening" options to opt into per lab -- they're bugs
+# that break the Console UI regardless of which hardening stage is
+# active, found and root-caused via controlled A/B testing (see
+# rules/console-deployment-config-exclusion.conf for the full writeup):
+#
+# 1. The CRS-nginx image's proxy_backend.conf.template is missing
+#    X-Forwarded-Host/-Server and proxy_cookie_path, and uses $host
+#    (drops the port) instead of $http_host for the Host header --
+#    all four are present in WSO2's own official reverse-proxy
+#    reference config. Overriding the base image's own template so
+#    every stage gets these headers, unconditionally, on every boot
+#    (the base image's docker-entrypoint.sh re-renders this template
+#    from scratch every time the container starts, so a one-time file
+#    edit would not survive -- it has to replace the template itself).
+COPY docker/proxy_backend.conf.template /etc/nginx/templates/includes/proxy_backend.conf.template
+
+# 2. CRS rule 930130 false-positives on /console/deployment.config.json,
+#    a legitimate unauthenticated static asset the Console SPA needs on
+#    every page load -- crashes the SPA's init code and is the actual,
+#    confirmed root cause of the "Console UI stuck/loops behind the WAF"
+#    symptom in this lab series. Baked in for every stage since this
+#    isn't a hardening trade-off, it's a correctness fix.
+COPY rules/console-deployment-config-exclusion.conf /etc/modsecurity.d/owasp-crs/rules/REQUEST-900-CONSOLE-DEPLOYMENT-CONFIG.conf
+
 COPY docker/supervisord.conf /etc/supervisor/conf.d/wso2is-modsec.conf
 COPY docker/start.sh /start.sh
 RUN chmod +x /start.sh
