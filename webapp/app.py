@@ -84,7 +84,8 @@ PAGE = """
 
   <p class="muted" style="font-size:.85rem">Endpoints: <code>/search?q=</code> ·
      <code>/login?user=</code> · <code>/file?name=</code> ·
-     <code>/api/log</code> (POST) · <code>/healthz</code></p>
+     <code>/api/log</code> (POST) · <code>/upload.php</code> (POST) ·
+     <code>/healthz</code></p>
 </body>
 </html>
 """
@@ -145,6 +146,44 @@ def api_log():
     ua = request.headers.get("X-Api-Version", "")
     payload = request.values.get("data", "")
     return jsonify({"logged_version": ua, "logged_data": payload, "status": "ok"})
+
+
+@app.route("/upload.php", methods=["POST", "GET"])
+def upload_php():
+    # Stand-in for a PHP upload endpoint -- note the literal .php path, since
+    # the virtual patch's REQUEST_FILENAME anchor ("@rx \.php(/|$)") only
+    # scopes itself to real PHP endpoints. Simulates the two (unverified)
+    # halves of "PHP2Shell" CVE-2026-109618/109619 that
+    # rules/VIRTUAL-PATCH-php2shell.conf virtual-patches:
+    #   - OOM: a multipart body/arg-count large enough to exhaust memory
+    #   - RCE: a PHP tag smuggled into a header, later include()'d from a
+    #     poisoned log file
+    # Nothing here actually executes anything — it only reproduces the
+    # *observable* crash signature, so the WAF's phase:4 response-
+    # correlation rule (1000919) has something real to correlate against.
+    ua = request.headers.get("User-Agent", "")
+    referer = request.headers.get("Referer", "")
+    content_length = request.content_length or 0
+    arg_count = len(request.values)
+
+    if "<?php" in ua or "<?php" in referer:
+        return (
+            "PHP Fatal error:  Uncaught Error: poisoned log entry executed"
+            " in /var/log/app/access.log on line 1\nStack trace:\n#0 {main}"
+            "\n  thrown in /var/www/include.php on line 1\n",
+            500,
+        )
+
+    if content_length > 2_000_000 or arg_count > 255:
+        return (
+            "PHP Fatal error:  Allowed memory size of 134217728 bytes"
+            " exhausted (tried to allocate 20480 bytes)\n",
+            500,
+        )
+
+    return jsonify(
+        {"status": "ok", "args_received": arg_count, "content_length": content_length}
+    )
 
 
 @app.route("/healthz")

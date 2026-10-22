@@ -85,6 +85,7 @@ ModSecLabs/
 │   ├── LOCAL-999-CUSTOM.conf          # Lab 06 custom SecRules
 │   ├── EXCLUSIONS-BEFORE-CRS.conf     # Lab 07 surgical exclusion
 │   ├── VIRTUAL-PATCH-log4shell.conf   # Lab 08 CVE virtual patch
+│   ├── VIRTUAL-PATCH-php2shell.conf   # scored + req/response-correlated virtual patch (CVE-2026-109618/9, unverified)
 │   ├── DISABLE-944.conf               # Lab 08 0-day-window simulation
 │   ├── WHITELIST.conf                 # Lab 09 whitelist a rule ID
 │   └── ALLOWLIST-IP.conf              # Lab 09 trusted-IP allowlist
